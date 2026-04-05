@@ -1,489 +1,54 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import * as Tone from "tone";
+import { COLS, ROWS, CELL, W, H, TOWERS, ZOMBIE_DEFS, dist, lerp, rnd, uid, resetId } from "./constants.js";
+import { sfx } from "./sounds.js";
+import { generateTerrain, drawZombie, drawTower } from "./renderers.js";
 
-const COLS = 22;
-const ROWS = 13;
-const CELL = 44;
-const W = COLS * CELL;
-const H = ROWS * CELL;
-
-const PATH_POINTS = [
-  [0,2],[1,2],[2,2],[3,2],[4,2],[5,2],[5,3],[5,4],[5,5],[5,6],[5,7],
-  [6,7],[7,7],[8,7],[9,7],[10,7],[10,6],[10,5],[10,4],[10,3],[10,2],
-  [11,2],[12,2],[13,2],[14,2],[15,2],[15,3],[15,4],[15,5],[15,6],[15,7],
-  [15,8],[15,9],[15,10],[16,10],[17,10],[18,10],[19,10],[20,10],[21,10],
-];
-const PATH_SET = new Set(PATH_POINTS.map(([c,r])=>`${c},${r}`));
-
-const TOWERS = {
-  rifle: { name:"Marksman", cost:100, dmg:28, range:4.5, rate:38, color:"#5b9bd5", icon:"⊕", desc:"Reliable long-range rifle", bullet:"#8ec4ff", projSize:3 },
-  shotgun: { name:"Boomstick", cost:75, dmg:15, range:2.2, rate:20, color:"#e8823a", icon:"◎", desc:"Devastating close spread", bullet:"#ffaa55", splash:1.0, projSize:4 },
-  fire: { name:"Inferno", cost:150, dmg:6, range:3, rate:16, color:"#e84040", icon:"♨", desc:"Burns the horde alive", bullet:"#ff6633", splash:1.6, dot:6, projSize:5 },
-  spike: { name:"Spike Trap", cost:50, dmg:0, range:0, rate:0, color:"#777", icon:"⚒", desc:"Slows zombies 40%", slow:0.4 },
-  tesla: { name:"Arc Pylon", cost:225, dmg:35, range:3.5, rate:48, color:"#00d4ff", icon:"⚡", desc:"Chain lightning + stun", bullet:"#00ffff", chain:4, projSize:3 },
-  cannon: { name:"Cannon", cost:180, dmg:60, range:4, rate:70, color:"#cc8833", icon:"☄", desc:"Massive AOE blast", bullet:"#ffcc44", splash:2.0, projSize:6 },
-  freeze: { name:"Cryo Tower", cost:175, dmg:3, range:3.5, rate:28, color:"#88ccff", icon:"❄", desc:"Freezes and slows nearby", bullet:"#aaddff", splash:1.5, freezeTime:50, projSize:4 },
-};
-
-const ZOMBIE_DEFS = {
-  shambler: { name:"Shambler", hp:100, spd:0.016, reward:10, bodyColor:"#4d6b3d", size:0.55, limbColor:"#3a5530" },
-  walker: { name:"Walker", hp:150, spd:0.019, reward:12, bodyColor:"#3d5e3d", size:0.6, limbColor:"#2d4a2d" },
-  runner: { name:"Sprinter", hp:80, spd:0.038, reward:14, bodyColor:"#6b4a3a", size:0.48, limbColor:"#5a3a2a" },
-  crawler: { name:"Crawler", hp:55, spd:0.025, reward:8, bodyColor:"#7a6a4a", size:0.35, limbColor:"#6a5a3a" },
-  brute: { name:"Brute", hp:450, spd:0.012, reward:28, bodyColor:"#2e4a2e", size:0.8, limbColor:"#1e3a1e" },
-  spitter: { name:"Bloater", hp:200, spd:0.015, reward:20, bodyColor:"#5a6e3a", size:0.65, limbColor:"#4a5e2a", healer:true },
-  armored: { name:"Riot Zombie", hp:650, spd:0.01, reward:35, bodyColor:"#4a4a5a", size:0.75, limbColor:"#3a3a4a", armor:0.3 },
-  horde: { name:"Swarm", hp:40, spd:0.032, reward:5, bodyColor:"#5a5a4a", size:0.38, limbColor:"#4a4a3a" },
-  charger: { name:"Charger", hp:120, spd:0.02, reward:16, bodyColor:"#7a3a2a", size:0.55, limbColor:"#6a2a1a", charges:true },
-  boss: { name:"Abomination", hp:2000, spd:0.008, reward:120, bodyColor:"#1a3322", size:1.1, limbColor:"#0d2216" },
-  megaboss: { name:"Leviathan", hp:5500, spd:0.006, reward:300, bodyColor:"#1a1a2a", size:1.3, limbColor:"#0d0d1a", regen:4 },
-};
-
-function generateWaves(count) {
-  const waves = [];
-  for (let i = 0; i < count; i++) {
-    const groups = [];
-    if (i === 0) {
-      groups.push({ type:"shambler", count:8 });
-    } else if (i === 1) {
-      groups.push({ type:"shambler", count:10 });
-      groups.push({ type:"crawler", count:5 });
-    } else if (i === 2) {
-      groups.push({ type:"walker", count:8 });
-      groups.push({ type:"crawler", count:6 });
-      groups.push({ type:"runner", count:3 });
-    } else if (i === 3) {
-      groups.push({ type:"walker", count:10 });
-      groups.push({ type:"runner", count:6 });
-      groups.push({ type:"horde", count:8 });
-    } else if (i === 4) {
-      groups.push({ type:"walker", count:8 });
-      groups.push({ type:"runner", count:8 });
-      groups.push({ type:"brute", count:2 });
-      groups.push({ type:"horde", count:10 });
-    } else if (i === 5) {
-      groups.push({ type:"runner", count:12 });
-      groups.push({ type:"brute", count:3 });
-      groups.push({ type:"charger", count:5 });
-    } else if (i === 6) {
-      groups.push({ type:"walker", count:12 });
-      groups.push({ type:"brute", count:4 });
-      groups.push({ type:"spitter", count:4 });
-      groups.push({ type:"horde", count:12 });
-    } else if (i === 7) {
-      groups.push({ type:"runner", count:15 });
-      groups.push({ type:"charger", count:8 });
-      groups.push({ type:"brute", count:3 });
-      groups.push({ type:"armored", count:2 });
-    } else if (i === 8) {
-      groups.push({ type:"armored", count:4 });
-      groups.push({ type:"brute", count:5 });
-      groups.push({ type:"horde", count:20 });
-      groups.push({ type:"spitter", count:3 });
-    } else if (i === 9) {
-      groups.push({ type:"boss", count:1 });
-      groups.push({ type:"brute", count:6 });
-      groups.push({ type:"runner", count:12 });
-      groups.push({ type:"armored", count:3 });
-    } else if (i === 10) {
-      groups.push({ type:"armored", count:6 });
-      groups.push({ type:"charger", count:10 });
-      groups.push({ type:"horde", count:25 });
-      groups.push({ type:"spitter", count:5 });
-    } else if (i === 11) {
-      groups.push({ type:"runner", count:20 });
-      groups.push({ type:"brute", count:8 });
-      groups.push({ type:"armored", count:5 });
-      groups.push({ type:"charger", count:8 });
-    } else if (i === 12) {
-      groups.push({ type:"horde", count:35 });
-      groups.push({ type:"armored", count:6 });
-      groups.push({ type:"brute", count:6 });
-      groups.push({ type:"spitter", count:6 });
-    } else if (i === 13) {
-      groups.push({ type:"boss", count:2 });
-      groups.push({ type:"armored", count:8 });
-      groups.push({ type:"runner", count:15 });
-      groups.push({ type:"horde", count:20 });
-    } else if (i === 14) {
-      groups.push({ type:"charger", count:15 });
-      groups.push({ type:"brute", count:10 });
-      groups.push({ type:"armored", count:8 });
-      groups.push({ type:"horde", count:30 });
-    } else if (i === 15) {
-      groups.push({ type:"boss", count:2 });
-      groups.push({ type:"armored", count:10 });
-      groups.push({ type:"brute", count:10 });
-      groups.push({ type:"runner", count:20 });
-      groups.push({ type:"spitter", count:8 });
-    } else if (i === 16) {
-      groups.push({ type:"horde", count:50 });
-      groups.push({ type:"charger", count:15 });
-      groups.push({ type:"armored", count:8 });
-      groups.push({ type:"brute", count:8 });
-    } else if (i === 17) {
-      groups.push({ type:"boss", count:3 });
-      groups.push({ type:"armored", count:12 });
-      groups.push({ type:"runner", count:20 });
-      groups.push({ type:"horde", count:30 });
-    } else if (i === 18) {
-      groups.push({ type:"boss", count:3 });
-      groups.push({ type:"brute", count:15 });
-      groups.push({ type:"armored", count:15 });
-      groups.push({ type:"charger", count:20 });
-      groups.push({ type:"horde", count:40 });
-    } else {
-      groups.push({ type:"megaboss", count:1 });
-      groups.push({ type:"boss", count:4 });
-      groups.push({ type:"armored", count:15 });
-      groups.push({ type:"brute", count:12 });
-      groups.push({ type:"horde", count:50 });
-      groups.push({ type:"charger", count:15 });
-    }
-    const hpMult = 1 + i * 0.12;
-    const delay = Math.max(8, 28 - i * 1.2);
-    waves.push({ groups, delay: Math.round(delay), hpMult });
-  }
-  return waves;
-}
-
-const TOTAL_WAVES = 20;
-const WAVES = generateWaves(TOTAL_WAVES);
-
-function dist(x1,y1,x2,y2){ return Math.sqrt((x1-x2)**2+(y1-y2)**2); }
-function lerp(a,b,t){ return a+(b-a)*t; }
-function rnd(a,b){ return a+Math.random()*(b-a); }
-
-let _id = 0;
-const uid = () => ++_id;
-
-// ========== SOUND ENGINE ==========
-class SoundEngine {
-  constructor() {
-    this.ready = false;
-    this.muted = false;
-  }
-  async init() {
-    if (this.ready) return;
-    try {
-      await Tone.start();
-      this.masterVol = new Tone.Volume(-8).toDestination();
-      
-      // Ambient drone
-      this.ambientSynth = new Tone.FMSynth({
-        oscillator: { type: "sine" },
-        envelope: { attack: 2, decay: 1, sustain: 0.8, release: 3 },
-        modulation: { type: "sine" },
-        modulationEnvelope: { attack: 3, decay: 2, sustain: 0.6, release: 4 },
-      }).connect(new Tone.Volume(-28).connect(new Tone.Reverb({ decay: 8, wet: 0.7 }).connect(this.masterVol)));
-      
-      // Rifle shot
-      this.rifleSynth = new Tone.NoiseSynth({
-        noise: { type: "white" },
-        envelope: { attack: 0.001, decay: 0.08, sustain: 0 },
-      }).connect(new Tone.Filter(3000, "bandpass").connect(new Tone.Volume(-16).connect(this.masterVol)));
-      
-      // Shotgun
-      this.shotgunSynth = new Tone.NoiseSynth({
-        noise: { type: "brown" },
-        envelope: { attack: 0.001, decay: 0.15, sustain: 0 },
-      }).connect(new Tone.Filter(1500, "lowpass").connect(new Tone.Volume(-12).connect(this.masterVol)));
-      
-      // Explosion / cannon
-      this.explosionSynth = new Tone.MembraneSynth({
-        pitchDecay: 0.08, octaves: 6, envelope: { attack: 0.001, decay: 0.4, sustain: 0, release: 0.3 },
-      }).connect(new Tone.Distortion(0.4).connect(new Tone.Volume(-14).connect(this.masterVol)));
-      
-      // Tesla zap
-      this.zapSynth = new Tone.FMSynth({
-        harmonicity: 8, modulationIndex: 20,
-        envelope: { attack: 0.001, decay: 0.12, sustain: 0, release: 0.05 },
-        modulation: { type: "square" },
-      }).connect(new Tone.Volume(-18).connect(this.masterVol));
-      
-      // Fire whoosh
-      this.fireSynth = new Tone.NoiseSynth({
-        noise: { type: "pink" },
-        envelope: { attack: 0.01, decay: 0.3, sustain: 0 },
-      }).connect(new Tone.Filter(2000, "lowpass").connect(new Tone.Volume(-18).connect(this.masterVol)));
-      
-      // Freeze
-      this.freezeSynth = new Tone.MetalSynth({
-        frequency: 400, envelope: { attack: 0.001, decay: 0.25, release: 0.1 },
-        harmonicity: 12, modulationIndex: 8, resonance: 2000, octaves: 1,
-      }).connect(new Tone.Volume(-22).connect(this.masterVol));
-      
-      // Zombie death
-      this.deathSynth = new Tone.MembraneSynth({
-        pitchDecay: 0.05, octaves: 4, envelope: { attack: 0.001, decay: 0.2, sustain: 0, release: 0.1 },
-      }).connect(new Tone.Volume(-16).connect(this.masterVol));
-      
-      // Place tower
-      this.placeSynth = new Tone.MetalSynth({
-        frequency: 200, envelope: { attack: 0.001, decay: 0.15, release: 0.05 },
-        harmonicity: 5.1, modulationIndex: 16, resonance: 3000, octaves: 0.5,
-      }).connect(new Tone.Volume(-20).connect(this.masterVol));
-      
-      // Wave start horn
-      this.hornSynth = new Tone.FMSynth({
-        harmonicity: 2, modulationIndex: 3,
-        envelope: { attack: 0.1, decay: 0.4, sustain: 0.3, release: 0.5 },
-      }).connect(new Tone.Reverb({ decay: 3, wet: 0.5 }).connect(new Tone.Volume(-14).connect(this.masterVol)));
-      
-      // Breach alarm
-      this.alarmSynth = new Tone.FMSynth({
-        harmonicity: 4, modulationIndex: 10,
-        envelope: { attack: 0.01, decay: 0.2, sustain: 0.1, release: 0.1 },
-      }).connect(new Tone.Volume(-16).connect(this.masterVol));
-      
-      // Game over
-      this.gameOverSynth = new Tone.PolySynth(Tone.Synth, {
-        oscillator: { type: "sawtooth" },
-        envelope: { attack: 0.05, decay: 1.5, sustain: 0, release: 1 },
-      }).connect(new Tone.Reverb({ decay: 5, wet: 0.6 }).connect(new Tone.Volume(-12).connect(this.masterVol)));
-      
-      // Victory fanfare
-      this.victorySynth = new Tone.PolySynth(Tone.Synth, {
-        oscillator: { type: "triangle" },
-        envelope: { attack: 0.02, decay: 0.8, sustain: 0.2, release: 1 },
-      }).connect(new Tone.Reverb({ decay: 4, wet: 0.5 }).connect(new Tone.Volume(-12).connect(this.masterVol)));
-
-      // Zombie groan
-      this.groanSynth = new Tone.FMSynth({
-        harmonicity: 1.5, modulationIndex: 5,
-        oscillator: { type: "sawtooth" },
-        envelope: { attack: 0.3, decay: 0.6, sustain: 0.2, release: 0.4 },
-        modulation: { type: "sine" },
-      }).connect(new Tone.Filter(600, "lowpass").connect(new Tone.Reverb({ decay: 2, wet: 0.4 }).connect(new Tone.Volume(-26).connect(this.masterVol))));
-      
-      this.ready = true;
-    } catch(e) { console.warn("Audio init failed:", e); }
-  }
-  
-  play(type) {
-    if (!this.ready || this.muted) return;
-    try {
-      const now = Tone.now();
-      switch(type) {
-        case "rifle": this.rifleSynth.triggerAttackRelease("16n", now); break;
-        case "shotgun": this.shotgunSynth.triggerAttackRelease("8n", now); break;
-        case "explosion": this.explosionSynth.triggerAttackRelease("C1", "8n", now); break;
-        case "cannon": this.explosionSynth.triggerAttackRelease("G0", "4n", now); break;
-        case "zap": this.zapSynth.triggerAttackRelease("C5", "16n", now); break;
-        case "fire": this.fireSynth.triggerAttackRelease("8n", now); break;
-        case "freeze": this.freezeSynth.triggerAttackRelease("16n", now); break;
-        case "death": this.deathSynth.triggerAttackRelease("E1", "16n", now); break;
-        case "bigdeath": this.deathSynth.triggerAttackRelease("C1", "8n", now); break;
-        case "place": this.placeSynth.triggerAttackRelease("16n", now); break;
-        case "sell": this.placeSynth.triggerAttackRelease("32n", now); break;
-        case "wavestart":
-          this.hornSynth.triggerAttackRelease("D3", "4n", now);
-          this.hornSynth.triggerAttackRelease("A3", "4n", now + 0.3);
-          break;
-        case "breach":
-          this.alarmSynth.triggerAttackRelease("A4", "16n", now);
-          this.alarmSynth.triggerAttackRelease("E4", "16n", now + 0.1);
-          break;
-        case "gameover":
-          this.gameOverSynth.triggerAttackRelease(["D2","A2","F2"], "2n", now);
-          break;
-        case "victory":
-          this.victorySynth.triggerAttackRelease(["C4","E4","G4"], "8n", now);
-          this.victorySynth.triggerAttackRelease(["E4","G4","C5"], "8n", now + 0.25);
-          this.victorySynth.triggerAttackRelease(["G4","C5","E5"], "4n", now + 0.5);
-          break;
-        case "groan":
-          this.groanSynth.triggerAttackRelease(rnd(55,85), "8n", now);
-          break;
-        case "ambientstart":
-          this.ambientSynth.triggerAttack("C1", now);
-          break;
-        case "ambientstop":
-          this.ambientSynth.triggerRelease(now);
-          break;
-      }
-    } catch(e) {}
-  }
-  
-  toggle() { this.muted = !this.muted; return this.muted; }
-}
-
-const sfx = new SoundEngine();
-
-function generateTerrain() {
-  const deco = [];
-  for (let r = 0; r < ROWS; r++) {
-    for (let c = 0; c < COLS; c++) {
-      if (PATH_SET.has(`${c},${r}`)) {
-        for (let i = 0; i < 2; i++) {
-          if (Math.random() < 0.3) deco.push({ type:"rubble", x:c*CELL+rnd(4,CELL-4), y:r*CELL+rnd(4,CELL-4), s:rnd(1,3), c:`rgba(60,50,35,${rnd(0.3,0.6)})` });
-        }
-        if (Math.random()<0.08) deco.push({ type:"crack", x:c*CELL+rnd(8,CELL-8), y:r*CELL+rnd(8,CELL-8), rot:rnd(0,Math.PI*2) });
-      } else {
-        for (let i = 0; i < 3; i++) {
-          if (Math.random()<0.35) deco.push({ type:"grass", x:c*CELL+rnd(2,CELL-2), y:r*CELL+rnd(2,CELL-2), h:rnd(3,8), c:`rgba(${30+Math.floor(rnd(0,25))},${50+Math.floor(rnd(0,30))},${20+Math.floor(rnd(0,15))},${rnd(0.4,0.8)})` });
-        }
-        if (Math.random()<0.04) deco.push({ type:"rock", x:c*CELL+rnd(6,CELL-6), y:r*CELL+rnd(6,CELL-6), s:rnd(3,7), c:`rgba(${50+Math.floor(rnd(0,30))},${45+Math.floor(rnd(0,25))},${40+Math.floor(rnd(0,20))},${rnd(0.5,0.8)})` });
-        if (Math.random()<0.02) deco.push({ type:"stump", x:c*CELL+rnd(10,CELL-10), y:r*CELL+rnd(10,CELL-10), s:rnd(4,8) });
-      }
-    }
-  }
-  for (let i = 0; i < 8; i++) {
-    const pi = Math.floor(rnd(0, PATH_POINTS.length));
-    const [pc, pr] = PATH_POINTS[pi];
-    deco.push({ type:"bloodstain", x:pc*CELL+rnd(5,CELL-5), y:pr*CELL+rnd(5,CELL-5), s:rnd(4,12), a:rnd(0.05,0.15) });
-  }
-  return deco;
-}
-
-function drawZombie(ctx, z, tick) {
-  const s = CELL * z.size * 0.42;
-  const wobble = Math.sin(tick * z.speed * 8 + z.id) * 3;
-  const limbSwing = Math.sin(tick * z.speed * 12 + z.id) * 0.4;
-  ctx.save();
-  ctx.translate(z.x, z.y);
-  ctx.beginPath();
-  ctx.ellipse(0, s*0.9, s*1.1, s*0.3, 0, 0, Math.PI*2);
-  ctx.fillStyle = "rgba(0,0,0,0.35)";
-  ctx.fill();
-  const legC = z.limbColor;
-  ctx.strokeStyle = legC; ctx.lineWidth = Math.max(2, s*0.35); ctx.lineCap = "round";
-  ctx.beginPath(); ctx.moveTo(-s*0.25, s*0.3); ctx.lineTo(-s*0.3+Math.sin(limbSwing)*4, s*0.9); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(s*0.25, s*0.3); ctx.lineTo(s*0.3-Math.sin(limbSwing)*4, s*0.9); ctx.stroke();
-  ctx.lineWidth = Math.max(1.5, s*0.28);
-  ctx.beginPath(); ctx.moveTo(-s*0.5, -s*0.1); ctx.quadraticCurveTo(-s*0.8, -s*0.5+wobble*0.3, -s*0.6+Math.cos(limbSwing)*5, -s*0.7); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(s*0.5, -s*0.1); ctx.quadraticCurveTo(s*0.8, -s*0.3-wobble*0.3, s*0.7-Math.cos(limbSwing)*5, -s*0.6); ctx.stroke();
-  ctx.beginPath(); ctx.ellipse(0, 0, s*0.55, s*0.65, 0, 0, Math.PI*2);
-  const bg = ctx.createRadialGradient(0,-s*0.1,0,0,0,s*0.7);
-  if (z.stunTimer>0) { bg.addColorStop(0,"#44ccff"); bg.addColorStop(1,"#0088aa"); }
-  else if (z.freezeTimer>0) { bg.addColorStop(0,"#aaddff"); bg.addColorStop(1,"#6699cc"); }
-  else { bg.addColorStop(0,z.bodyColor); bg.addColorStop(1,z.limbColor); }
-  ctx.fillStyle = bg; ctx.fill();
-  ctx.strokeStyle = "rgba(0,0,0,0.4)"; ctx.lineWidth = 1; ctx.stroke();
-  // Armor plates
-  if (z.armor) {
-    ctx.fillStyle = "rgba(100,100,120,0.5)";
-    ctx.fillRect(-s*0.4, -s*0.3, s*0.8, s*0.5);
-    ctx.strokeStyle = "rgba(140,140,160,0.4)"; ctx.lineWidth = 0.8;
-    ctx.strokeRect(-s*0.4, -s*0.3, s*0.8, s*0.5);
-  }
-  // Charger glow
-  if (z.charges && z.charging) {
-    ctx.beginPath(); ctx.arc(0, 0, s*1.2, 0, Math.PI*2);
-    ctx.fillStyle = `rgba(255,80,30,${0.15+Math.sin(tick*0.3)*0.1})`; ctx.fill();
-  }
-  // Healer aura
-  if (z.healer) {
-    ctx.beginPath(); ctx.arc(0, 0, s*1.5, 0, Math.PI*2);
-    ctx.strokeStyle = `rgba(80,220,80,${0.2+Math.sin(tick*0.1)*0.1})`; ctx.lineWidth = 1.5; ctx.stroke();
-  }
-  if (z.size>0.45) {
-    ctx.fillStyle = "rgba(120,20,20,0.4)";
-    ctx.beginPath(); ctx.arc(s*0.2, s*0.1, s*0.12, 0, Math.PI*2); ctx.fill();
-    ctx.beginPath(); ctx.arc(-s*0.35, -s*0.15, s*0.08, 0, Math.PI*2); ctx.fill();
-  }
-  const headS = s*0.42, headY = -s*0.55;
-  ctx.beginPath(); ctx.arc(wobble*0.15, headY, headS, 0, Math.PI*2);
-  ctx.fillStyle = z.bodyColor; ctx.fill();
-  ctx.strokeStyle = "rgba(0,0,0,0.35)"; ctx.lineWidth = 0.8; ctx.stroke();
-  const eyeGlow = z.type==="boss"||z.type==="megaboss"?"#ff2200":z.charges?"#ff6600":"#ccdd33";
-  const eyeSize = headS*0.28;
-  ctx.shadowBlur = z.type==="boss"||z.type==="megaboss"?10:4;
-  ctx.shadowColor = eyeGlow; ctx.fillStyle = eyeGlow;
-  ctx.beginPath(); ctx.arc(wobble*0.15-headS*0.3,headY-headS*0.1,eyeSize,0,Math.PI*2); ctx.fill();
-  ctx.beginPath(); ctx.arc(wobble*0.15+headS*0.3,headY-headS*0.1,eyeSize,0,Math.PI*2); ctx.fill();
-  ctx.shadowBlur = 0;
-  ctx.fillStyle = "#111";
-  ctx.beginPath();
-  ctx.arc(wobble*0.15-headS*0.3,headY-headS*0.1,eyeSize*0.45,0,Math.PI*2);
-  ctx.arc(wobble*0.15+headS*0.3,headY-headS*0.1,eyeSize*0.45,0,Math.PI*2);
-  ctx.fill();
-  ctx.beginPath(); ctx.arc(wobble*0.15,headY+headS*0.35,headS*0.3,0,Math.PI);
-  ctx.fillStyle = "#2a0a0a"; ctx.fill();
-  if (z.type==="boss"||z.type==="megaboss") {
-    ctx.strokeStyle = z.type==="megaboss"?"#660022":"#443322"; ctx.lineWidth = 2.5;
-    ctx.beginPath(); ctx.moveTo(-headS*0.6,headY-headS*0.6); ctx.lineTo(-headS*0.3,headY-headS*1.3); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(headS*0.6,headY-headS*0.6); ctx.lineTo(headS*0.3,headY-headS*1.3); ctx.stroke();
-    if (z.type==="megaboss") {
-      ctx.beginPath(); ctx.moveTo(0,headY-headS*0.8); ctx.lineTo(0,headY-headS*1.5); ctx.stroke();
-    }
-  }
-  if (z.dot>0) {
-    for (let i=0;i<3;i++) {
-      ctx.beginPath(); ctx.arc(rnd(-s,s),rnd(-s,s*0.5),rnd(1.5,3.5),0,Math.PI*2);
-      ctx.fillStyle=`rgba(255,${Math.floor(rnd(80,180))},0,${rnd(0.4,0.8)})`; ctx.fill();
-    }
-  }
-  ctx.restore();
-  if (z.hp < z.maxHp) {
-    const barW=CELL*z.size*0.9, barH=3.5, bx=z.x-barW/2, by=z.y-s*1.4;
-    ctx.fillStyle="#1a0000"; ctx.fillRect(bx-0.5,by-0.5,barW+1,barH+1);
-    const pct=z.hp/z.maxHp;
-    ctx.fillStyle=pct>0.6?"#44aa33":pct>0.3?"#ccaa22":"#cc2222";
-    ctx.fillRect(bx,by,barW*pct,barH);
-    ctx.strokeStyle="rgba(0,0,0,0.3)"; ctx.lineWidth=0.5;
-    for(let i=1;i<5;i++){const sx=bx+(barW/5)*i;ctx.beginPath();ctx.moveTo(sx,by);ctx.lineTo(sx,by+barH);ctx.stroke();}
-  }
-}
-
-function drawTower(ctx, t) {
-  const cx=t.x, cy=t.y, s=CELL*0.42;
-  ctx.fillStyle="#2a2a2a";
-  ctx.beginPath(); ctx.roundRect(cx-s,cy-s,s*2,s*2,4); ctx.fill();
-  ctx.fillStyle="#333";
-  ctx.beginPath(); ctx.roundRect(cx-s+2,cy-s+2,s*2-4,s*2-4,3); ctx.fill();
-  const grad=ctx.createRadialGradient(cx,cy-2,0,cx,cy,s*0.9);
-  grad.addColorStop(0,t.color); grad.addColorStop(1,`${t.color}88`);
-  ctx.fillStyle=grad;
-  ctx.beginPath(); ctx.roundRect(cx-s+5,cy-s+5,s*2-10,s*2-10,3); ctx.fill();
-  ctx.font=`bold ${Math.floor(s*1.1)}px monospace`;
-  ctx.textAlign="center"; ctx.textBaseline="middle";
-  ctx.fillStyle="#fff"; ctx.shadowBlur=6; ctx.shadowColor=t.color;
-  ctx.fillText(t.icon,cx,cy); ctx.shadowBlur=0;
-  if (t.targetAngle!==undefined && t.type!=="spike") {
-    ctx.save(); ctx.translate(cx,cy); ctx.rotate(t.targetAngle);
-    ctx.strokeStyle=t.color; ctx.lineWidth=2;
-    ctx.beginPath(); ctx.moveTo(s*0.5,0); ctx.lineTo(s*0.9,0); ctx.stroke();
-    ctx.restore();
-  }
-  if (t.cooldown>0 && t.rate>0) {
-    const pct=t.cooldown/t.rate;
-    ctx.beginPath(); ctx.arc(cx,cy,s+1,-Math.PI/2,-Math.PI/2+Math.PI*2*(1-pct));
-    ctx.strokeStyle=`${t.color}44`; ctx.lineWidth=1.5; ctx.stroke();
-  }
-}
-
-export default function ZombieTD() {
+export default function ZombieTD({ levelConfig, onVictory, onDefeat }) {
   const canvasRef = useRef(null);
   const gRef = useRef(null);
   const terrainRef = useRef(null);
   const [sel, setSel] = useState(null);
-  const [money, setMoney] = useState(200);
-  const [lives, setLives] = useState(20);
+  const [money, setMoney] = useState(levelConfig.startingMoney);
+  const [lives, setLives] = useState(levelConfig.startingLives);
   const [wave, setWave] = useState(0);
   const [waveActive, setWaveActive] = useState(false);
-  const [state, setState] = useState("menu");
+  const [state, setState] = useState("briefing");
   const [kills, setKills] = useState(0);
   const [hover, setHover] = useState(null);
   const [speed, setSpeed] = useState(1);
   const [info, setInfo] = useState(null);
   const [score, setScore] = useState(0);
   const [muted, setMuted] = useState(false);
-  const [audioReady, setAudioReady] = useState(false);
+
+  const TOTAL_WAVES = levelConfig.waves.length;
+  const PATH_POINTS = levelConfig.path;
+  const PATH_SET = new Set(PATH_POINTS.map(([c,r]) => `${c},${r}`));
+
+  // For level 5 dual-path support
+  const PATH2_POINTS = levelConfig.path2 || null;
+  const PATH2_SET = PATH2_POINTS ? new Set(PATH2_POINTS.map(([c,r]) => `${c},${r}`)) : null;
+  const COMBINED_PATH_SET = new Set([...PATH_SET, ...(PATH2_SET || [])]);
+
+  // Available towers for this level
+  const availableTowers = {};
+  for (const key of levelConfig.availableTowers) {
+    availableTowers[key] = TOWERS[key];
+  }
+
+  const theme = levelConfig.theme;
 
   const initAudio = async () => {
     await sfx.init();
-    setAudioReady(true);
   };
 
   const init = useCallback(async () => {
-    _id = 0;
+    resetId();
     await initAudio();
-    terrainRef.current = generateTerrain();
+    terrainRef.current = generateTerrain(COMBINED_PATH_SET, PATH_POINTS);
     gRef.current = {
       towers:[], zombies:[], bullets:[], particles:[], effects:[],
-      spawnQueue:[], spawnTimer:0, money:200, lives:20, wave:0, kills:0,
-      waveActive:false, tick:0, score:0, bloodStains:[], shake:0, ambientParticles:[],
+      spawnQueue:[], spawnTimer:0, money:levelConfig.startingMoney, lives:levelConfig.startingLives,
+      wave:0, kills:0, waveActive:false, tick:0, score:0, bloodStains:[], shake:0, ambientParticles:[],
       groanTimer:0, lastShotSound:0,
     };
     for (let i=0;i<20;i++) {
@@ -491,34 +56,42 @@ export default function ZombieTD() {
         x:rnd(0,W), y:rnd(0,H), vx:rnd(-0.15,0.15), vy:rnd(-0.08,0.08), s:rnd(30,80), a:rnd(0.02,0.06)
       });
     }
-    setMoney(200); setLives(20); setWave(0); setWaveActive(false);
+    setMoney(levelConfig.startingMoney); setLives(levelConfig.startingLives); setWave(0); setWaveActive(false);
     setKills(0); setState("playing"); setSel(null); setSpeed(1); setScore(0);
     sfx.play("ambientstart");
-  }, []);
+  }, [levelConfig]);
 
   const startWave = useCallback(() => {
     const g = gRef.current;
     if (!g||g.waveActive||g.wave>=TOTAL_WAVES) return;
-    const w = WAVES[g.wave];
+    const w = levelConfig.waves[g.wave];
     const queue = [];
     for (const gr of w.groups) for (let i=0;i<gr.count;i++) queue.push({ type:gr.type, hpMult:w.hpMult });
     for (let i=queue.length-1;i>0;i--) { const j=Math.floor(Math.random()*(i+1));[queue[i],queue[j]]=[queue[j],queue[i]]; }
+
+    // For dual-path levels, mark some zombies to use path2
+    if (PATH2_POINTS) {
+      for (let i = 0; i < queue.length; i++) {
+        queue[i].usePath2 = Math.random() < 0.4; // 40% use the second path
+      }
+    }
+
     g.spawnQueue = queue; g.spawnTimer = 0; g.spawnDelay = w.delay;
     g.waveActive = true; setWaveActive(true);
     sfx.play("wavestart");
-  }, []);
+  }, [levelConfig, TOTAL_WAVES]);
 
   const placeTower = useCallback((col, row) => {
     const g = gRef.current;
     if (!g||!sel) return;
-    if (PATH_SET.has(`${col},${row}`)||col<0||col>=COLS||row<0||row>=ROWS) return;
+    if (COMBINED_PATH_SET.has(`${col},${row}`)||col<0||col>=COLS||row<0||row>=ROWS) return;
     if (g.towers.find(t=>t.col===col&&t.row===row)) return;
     const td = TOWERS[sel];
     if (g.money<td.cost) return;
     g.money -= td.cost; setMoney(g.money);
     g.towers.push({ id:uid(), type:sel, col, row, x:col*CELL+CELL/2, y:row*CELL+CELL/2, cooldown:0, ...td, targetAngle:0 });
     sfx.play("place");
-  }, [sel]);
+  }, [sel, COMBINED_PATH_SET]);
 
   const addP = (g,x,y,type,count) => {
     for(let i=0;i<count;i++){
@@ -543,7 +116,6 @@ export default function ZombieTD() {
         g.tick++;
         if (g.shake>0) g.shake--;
 
-        // Zombie groans
         g.groanTimer--;
         if (g.groanTimer<=0 && g.zombies.length>0) {
           sfx.play("groan");
@@ -557,13 +129,17 @@ export default function ZombieTD() {
             const info=g.spawnQueue.shift();
             const zd=ZOMBIE_DEFS[info.type];
             const scaledHp=Math.floor(zd.hp*info.hpMult);
+            const usePath2 = info.usePath2 && PATH2_POINTS;
+            const spawnPath = usePath2 ? PATH2_POINTS : PATH_POINTS;
             g.zombies.push({
               id:uid(), type:info.type, hp:scaledHp, maxHp:scaledHp,
-              pathIdx:0, pathProg:0, x:PATH_POINTS[0][0]*CELL+CELL/2, y:PATH_POINTS[0][1]*CELL+CELL/2,
+              pathIdx:0, pathProg:0,
+              x:spawnPath[0][0]*CELL+CELL/2, y:spawnPath[0][1]*CELL+CELL/2,
               speed:zd.spd*rnd(0.9,1.1), reward:zd.reward, bodyColor:zd.bodyColor,
               limbColor:zd.limbColor, size:zd.size, dot:0, dotTimer:0, slowTimer:0, stunTimer:0, freezeTimer:0,
               armor:zd.armor||0, healer:zd.healer||false, charges:zd.charges||false, regen:zd.regen||0,
               charging:false, chargeTimer:0,
+              pathPoints: spawnPath,
             });
             g.spawnTimer = g.spawnDelay;
           }
@@ -572,11 +148,7 @@ export default function ZombieTD() {
         // Move zombies
         for (const z of g.zombies) {
           if (z.stunTimer>0) { z.stunTimer--; continue; }
-          
-          // Regen
           if (z.regen>0 && z.hp<z.maxHp) z.hp = Math.min(z.maxHp, z.hp + z.regen);
-          
-          // Healer: heal nearby zombies
           if (z.healer) {
             for (const oz of g.zombies) {
               if (oz.id!==z.id && !oz.dead && oz.hp<oz.maxHp && dist(z.x,z.y,oz.x,oz.y)<CELL*2.5) {
@@ -584,33 +156,49 @@ export default function ZombieTD() {
               }
             }
           }
-          
-          // Charger ability: periodic speed burst
           if (z.charges) {
             z.chargeTimer++;
             if (z.chargeTimer > 120 && !z.charging) { z.charging = true; z.chargeTimer = 0; }
             if (z.charging && z.chargeTimer > 40) { z.charging = false; z.chargeTimer = 0; }
           }
-          
           let spd = z.speed;
           if (z.charging) spd *= 2.8;
           if (z.slowTimer>0) { spd *= 0.6; z.slowTimer--; }
           if (z.freezeTimer>0) { spd *= 0.3; z.freezeTimer--; }
           for (const t of g.towers) { if (t.type==="spike" && dist(z.x,z.y,t.x,t.y)<CELL*1.1) spd *= 0.6; }
           z.pathProg += spd;
-          while (z.pathProg>=1 && z.pathIdx<PATH_POINTS.length-2) { z.pathProg-=1; z.pathIdx++; }
-          if (z.pathIdx<PATH_POINTS.length-1) {
-            const [cx,cy]=PATH_POINTS[z.pathIdx];
-            const [nx,ny]=PATH_POINTS[Math.min(z.pathIdx+1,PATH_POINTS.length-1)];
+          const zPath = z.pathPoints;
+          while (z.pathProg>=1 && z.pathIdx<zPath.length-2) { z.pathProg-=1; z.pathIdx++; }
+          if (z.pathIdx<zPath.length-1) {
+            const [cx,cy]=zPath[z.pathIdx];
+            const [nx,ny]=zPath[Math.min(z.pathIdx+1,zPath.length-1)];
             z.x=lerp(cx*CELL+CELL/2,nx*CELL+CELL/2,z.pathProg);
             z.y=lerp(cy*CELL+CELL/2,ny*CELL+CELL/2,z.pathProg);
           }
-          if (z.pathIdx>=PATH_POINTS.length-2 && z.pathProg>=1) {
+
+          // Path2 zombies merge into main path when they reach the end of path2
+          if (z.pathPoints === PATH2_POINTS && z.pathIdx >= PATH2_POINTS.length - 2 && z.pathProg >= 1) {
+            // Find the merge point in main path
+            const lastP2 = PATH2_POINTS[PATH2_POINTS.length - 1];
+            let mergeIdx = PATH_POINTS.findIndex(([c,r]) => c === lastP2[0] && r === lastP2[1]);
+            if (mergeIdx >= 0) {
+              z.pathPoints = PATH_POINTS;
+              z.pathIdx = mergeIdx;
+              z.pathProg = 0;
+            } else {
+              // If no merge point, they just reached the end
+              z.dead=true; g.lives--; setLives(g.lives);
+              g.effects.push({type:"breach",x:z.x,y:z.y,timer:35});
+              g.shake=10; sfx.play("breach");
+            }
+          }
+          // Main path zombies reaching the end
+          else if (z.pathPoints === PATH_POINTS && z.pathIdx>=PATH_POINTS.length-2 && z.pathProg>=1) {
             z.dead=true; g.lives--; setLives(g.lives);
             g.effects.push({type:"breach",x:z.x,y:z.y,timer:35});
-            g.shake=10;
-            sfx.play("breach");
+            g.shake=10; sfx.play("breach");
           }
+
           if (z.dot>0) { z.dotTimer++; if (z.dotTimer%8===0) { z.hp-=z.dot; addP(g,z.x+rnd(-6,6),z.y+rnd(-6,6),"smoke",1); } }
         }
 
@@ -633,7 +221,6 @@ export default function ZombieTD() {
               chain:t.chain||0,towerType:t.type,projSize:t.projSize||3,freezeTime:t.freezeTime||0
             });
             addP(g,t.x,t.y,"spark",2);
-            // Sound (throttled)
             if (g.tick - g.lastShotSound > 4) {
               g.lastShotSound = g.tick;
               if (t.type==="rifle") sfx.play("rifle");
@@ -701,25 +288,38 @@ export default function ZombieTD() {
           g.wave++; g.waveActive=false;
           g.money+=20+g.wave*8;
           setWave(g.wave);setWaveActive(false);setMoney(g.money);
-          if(g.wave>=TOTAL_WAVES){setState("victory");sfx.play("ambientstop");sfx.play("victory");}
+          if(g.wave>=TOTAL_WAVES){
+            setState("victory");
+            sfx.play("ambientstop");sfx.play("victory");
+            if (onVictory) onVictory({ score: g.score, kills: g.kills, livesRemaining: g.lives });
+          }
         }
-        if(g.lives<=0){setState("gameover");sfx.play("ambientstop");sfx.play("gameover");}
+        if(g.lives<=0){
+          setState("gameover");
+          sfx.play("ambientstop");sfx.play("gameover");
+          if (onDefeat) onDefeat({ score: g.score, kills: g.kills });
+        }
       }
 
       // === RENDER ===
       ctx.save();
       if(g.shake>0)ctx.translate(rnd(-g.shake,g.shake),rnd(-g.shake,g.shake));
+
       const skyG=ctx.createLinearGradient(0,0,0,H);
-      skyG.addColorStop(0,"#0d1210");skyG.addColorStop(1,"#1a1e16");
+      skyG.addColorStop(0,theme.sky[0]);skyG.addColorStop(1,theme.sky[1]);
       ctx.fillStyle=skyG;ctx.fillRect(0,0,W,H);
 
       for(let r=0;r<ROWS;r++){for(let c=0;c<COLS;c++){
         const x=c*CELL,y=r*CELL;
-        if(PATH_SET.has(`${c},${r}`)){
-          const pg=ctx.createLinearGradient(x,y,x,y+CELL);pg.addColorStop(0,"#2d261c");pg.addColorStop(1,"#241f16");
+        if(COMBINED_PATH_SET.has(`${c},${r}`)){
+          const pg=ctx.createLinearGradient(x,y,x,y+CELL);pg.addColorStop(0,theme.path[0]);pg.addColorStop(1,theme.path[1]);
           ctx.fillStyle=pg;ctx.fillRect(x,y,CELL,CELL);
           ctx.strokeStyle="rgba(50,42,30,0.3)";ctx.lineWidth=0.5;ctx.strokeRect(x+0.5,y+0.5,CELL-1,CELL-1);
-        }else{const n=((c*7+r*13)%5);ctx.fillStyle=`rgb(${18+n*2},${28+n*3},${14+n})`;ctx.fillRect(x,y,CELL,CELL);}
+        }else{
+          const [gr,gg,gb]=theme.ground;
+          const n=((c*7+r*13)%5);
+          ctx.fillStyle=`rgb(${gr+n*2},${gg+n*3},${gb+n})`;ctx.fillRect(x,y,CELL,CELL);
+        }
       }}
 
       for(const d of terrain){
@@ -733,14 +333,19 @@ export default function ZombieTD() {
 
       for(const bs of g.bloodStains){ctx.beginPath();ctx.arc(bs.x,bs.y,bs.s,0,Math.PI*2);ctx.fillStyle=`rgba(90,15,10,${bs.a})`;ctx.fill();}
 
+      // Entry/exit markers
       ctx.fillStyle="#cc3333";ctx.font="bold 9px monospace";ctx.textAlign="center";
-      ctx.fillText("◄ ENTRY",PATH_POINTS[0][0]*CELL+CELL/2,PATH_POINTS[0][1]*CELL-5);
+      ctx.fillText("\u25C4 ENTRY",PATH_POINTS[0][0]*CELL+CELL/2,PATH_POINTS[0][1]*CELL-5);
+      if (PATH2_POINTS) {
+        ctx.fillStyle="#cc6633";
+        ctx.fillText("\u25C4 ENTRY 2",PATH2_POINTS[0][0]*CELL+CELL/2,PATH2_POINTS[0][1]*CELL-5);
+      }
       const lp=PATH_POINTS[PATH_POINTS.length-1];
-      ctx.fillStyle="#33cc33";ctx.fillText("EXIT ►",lp[0]*CELL+CELL/2,lp[1]*CELL-5);
+      ctx.fillStyle="#33cc33";ctx.fillText("EXIT \u25BA",lp[0]*CELL+CELL/2,lp[1]*CELL-5);
 
       if(hover&&sel){
         const[hc,hr]=hover;
-        const isP=PATH_SET.has(`${hc},${hr}`);const occ=g.towers.find(t=>t.col===hc&&t.row===hr);
+        const isP=COMBINED_PATH_SET.has(`${hc},${hr}`);const occ=g.towers.find(t=>t.col===hc&&t.row===hr);
         const can=!isP&&!occ&&hc>=0&&hc<COLS&&hr>=0&&hr<ROWS&&g.money>=TOWERS[sel].cost;
         ctx.fillStyle=can?"rgba(0,255,0,0.1)":"rgba(255,0,0,0.1)";
         ctx.fillRect(hc*CELL,hr*CELL,CELL,CELL);
@@ -773,7 +378,7 @@ export default function ZombieTD() {
       for(const p of g.particles){ctx.beginPath();ctx.arc(p.x,p.y,p.s*(p.life/p.maxLife),0,Math.PI*2);ctx.fillStyle=p.color+(p.life/p.maxLife).toFixed(2)+")";ctx.fill();}
 
       for(const e of g.effects){
-        if(e.type==="death"){const p=1-e.timer/30;ctx.font=`${14+p*12}px serif`;ctx.textAlign="center";ctx.globalAlpha=e.timer/30;ctx.fillStyle="#ff3333";ctx.fillText("☠",e.x,e.y-p*20);ctx.globalAlpha=1;}
+        if(e.type==="death"){const p=1-e.timer/30;ctx.font=`${14+p*12}px serif`;ctx.textAlign="center";ctx.globalAlpha=e.timer/30;ctx.fillStyle="#ff3333";ctx.fillText("\u2620",e.x,e.y-p*20);ctx.globalAlpha=1;}
         if(e.type==="breach"){ctx.fillStyle=`rgba(255,0,0,${(e.timer/35)*0.25})`;ctx.fillRect(0,0,W,H);}
       }
 
@@ -787,7 +392,7 @@ export default function ZombieTD() {
     };
     animId=requestAnimationFrame(tick);
     return()=>{cancelAnimationFrame(animId);};
-  },[state,hover,sel,speed]);
+  },[state,hover,sel,speed,levelConfig]);
 
   const handleClick=(e)=>{
     if(state!=="playing")return;
@@ -810,20 +415,26 @@ export default function ZombieTD() {
   };
   const toggleMute=()=>{const m=sfx.toggle();setMuted(m);};
 
-  if(state==="menu"){
+  // Briefing screen
+  if(state==="briefing"){
     return(
       <div style={{width:"100%",minHeight:"100vh",background:"linear-gradient(180deg,#080a08 0%,#0d120d 50%,#141a14 100%)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",fontFamily:"'Courier New',monospace",color:"#b8b8a0",padding:16,boxSizing:"border-box"}}>
         <div style={{textAlign:"center",maxWidth:640}}>
-          <div style={{fontSize:70,filter:"drop-shadow(0 0 20px rgba(200,0,0,0.4))",marginBottom:4}}>🧟‍♂️</div>
-          <h1 style={{fontSize:"clamp(32px,6vw,56px)",color:"#bb2222",margin:0,letterSpacing:6,textShadow:"0 0 30px rgba(180,0,0,0.5), 0 2px 0 #440000",fontWeight:900}}>DEAD ZONE</h1>
-          <p style={{color:"#554433",fontSize:11,letterSpacing:8,margin:"2px 0 28px",textTransform:"uppercase"}}>Survive the Horde</p>
-          <div style={{background:"rgba(20,20,16,0.8)",border:"1px solid #2a2820",borderRadius:8,padding:"18px 22px",marginBottom:24,textAlign:"left",fontSize:13,lineHeight:1.9,backdropFilter:"blur(4px)"}}>
+          <div style={{fontSize:10,color:"#554433",letterSpacing:6,marginBottom:8,textTransform:"uppercase"}}>Incoming Transmission</div>
+          <h1 style={{fontSize:"clamp(24px,5vw,40px)",color:"#cc8855",margin:"0 0 4px",letterSpacing:4,textShadow:"0 0 20px rgba(200,130,60,0.3)",fontWeight:900}}>
+            {levelConfig.name}, {levelConfig.region}
+          </h1>
+          <div style={{background:"rgba(20,20,16,0.8)",border:"1px solid #2a2820",borderRadius:8,padding:"18px 22px",marginBottom:16,textAlign:"left",fontSize:13,lineHeight:1.9,backdropFilter:"blur(4px)"}}>
             <p style={{color:"#883322",fontWeight:"bold",marginTop:0,fontSize:14,letterSpacing:2}}>SITUATION REPORT</p>
-            <p style={{margin:0,color:"#998877"}}>The perimeter is gone. 20 lives stand between humanity and extinction. Zombies are <span style={{color:"#cc4444"}}>fast, armored, and relentless</span>. Chargers will rush your defenses. Bloaters heal the horde. The Leviathan regenerates. Place towers wisely — scrap is scarce.</p>
-            <p style={{margin:"10px 0 0",color:"#776655",fontSize:11}}>🔊 Full sound effects — turn up your volume!</p>
+            <p style={{margin:0,color:"#998877"}}>{levelConfig.briefing}</p>
           </div>
-          <div style={{display:"flex",flexWrap:"wrap",gap:6,justifyContent:"center",marginBottom:28}}>
-            {Object.entries(TOWERS).map(([k,t])=>(
+          <div style={{background:"rgba(20,20,16,0.6)",border:"1px solid #222018",borderRadius:6,padding:"12px 18px",marginBottom:20,textAlign:"left",fontSize:12,lineHeight:1.7}}>
+            <p style={{color:"#885533",fontWeight:"bold",marginTop:0,fontSize:11,letterSpacing:2}}>INTEL</p>
+            <p style={{margin:0,color:"#776655"}}>{levelConfig.intel}</p>
+            <p style={{margin:"8px 0 0",color:"#555",fontSize:10}}>{TOTAL_WAVES} waves · {levelConfig.startingLives} lives · {levelConfig.startingMoney} scrap · {levelConfig.availableTowers.length} towers</p>
+          </div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:6,justifyContent:"center",marginBottom:24}}>
+            {Object.entries(availableTowers).map(([k,t])=>(
               <div key={k} style={{background:"rgba(20,20,16,0.9)",border:"1px solid #2a2820",borderRadius:6,padding:"8px 10px",fontSize:11,width:85,textAlign:"center"}}>
                 <div style={{fontSize:22,filter:`drop-shadow(0 0 4px ${t.color}44)`}}>{t.icon}</div>
                 <div style={{color:t.color,fontWeight:"bold",fontSize:10}}>{t.name}</div>
@@ -834,32 +445,50 @@ export default function ZombieTD() {
           <button onClick={init} style={{background:"linear-gradient(180deg,#aa2222,#882222)",color:"#ffddcc",border:"1px solid #cc3333",padding:"14px 56px",fontSize:18,fontWeight:"bold",cursor:"pointer",fontFamily:"inherit",letterSpacing:4,borderRadius:4,textShadow:"0 1px 2px rgba(0,0,0,0.5)",boxShadow:"0 0 30px rgba(180,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.1)"}}
             onMouseOver={e=>e.target.style.background="linear-gradient(180deg,#cc3333,#aa2222)"}
             onMouseOut={e=>e.target.style.background="linear-gradient(180deg,#aa2222,#882222)"}>
-            SURVIVE
+            DEPLOY DEFENSES
           </button>
         </div>
       </div>
     );
   }
 
-  if(state==="gameover"||state==="victory"){
+  if(state==="gameover"){
     return(
       <div style={{width:"100%",minHeight:"100vh",background:"linear-gradient(180deg,#080a08,#0d120d,#141a14)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",fontFamily:"'Courier New',monospace",color:"#b8b8a0",padding:16,boxSizing:"border-box"}}>
         <div style={{textAlign:"center"}}>
-          <div style={{fontSize:80,filter:`drop-shadow(0 0 30px ${state==="victory"?"rgba(0,180,0,0.4)":"rgba(200,0,0,0.4)"})`}}>{state==="victory"?"🏆":"💀"}</div>
-          <h1 style={{fontSize:"clamp(28px,5vw,48px)",color:state==="victory"?"#44aa44":"#cc3333",textShadow:`0 0 25px ${state==="victory"?"rgba(0,180,0,0.4)":"rgba(200,0,0,0.4)"}`,letterSpacing:4}}>
-            {state==="victory"?"AREA SECURED":"OVERRUN"}
-          </h1>
+          <div style={{fontSize:80,filter:"drop-shadow(0 0 30px rgba(200,0,0,0.4))"}}>💀</div>
+          <h1 style={{fontSize:"clamp(28px,5vw,48px)",color:"#cc3333",textShadow:"0 0 25px rgba(200,0,0,0.4)",letterSpacing:4}}>OVERRUN</h1>
           <div style={{fontSize:14,marginBottom:8,display:"flex",gap:20,justifyContent:"center",flexWrap:"wrap"}}>
             <span><span style={{color:"#666"}}>Waves </span><span style={{color:"#ddd"}}>{wave}/{TOTAL_WAVES}</span></span>
             <span><span style={{color:"#666"}}>Kills </span><span style={{color:"#ddd"}}>{kills}</span></span>
             <span><span style={{color:"#666"}}>Score </span><span style={{color:"#ffd700"}}>{score}</span></span>
           </div>
-          <div style={{fontSize:11,color:"#555",marginBottom:30}}>
-            {state==="victory"?"Against all odds, the supply line holds.":"The dead consume everything."}
-          </div>
+          <div style={{fontSize:11,color:"#555",marginBottom:30}}>The dead consume everything.</div>
           <button onClick={init} style={{background:"linear-gradient(180deg,#aa2222,#882222)",color:"#ffddcc",border:"1px solid #cc3333",padding:"12px 44px",fontSize:16,fontWeight:"bold",cursor:"pointer",fontFamily:"inherit",letterSpacing:3,borderRadius:4}}>
-            {state==="victory"?"PLAY AGAIN":"TRY AGAIN"}
+            TRY AGAIN
           </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Victory screen is now handled by the parent via onVictory callback
+  // but we still show a brief "victory" state before the callback fires
+  if(state==="victory"){
+    return(
+      <div style={{width:"100%",minHeight:"100vh",background:"linear-gradient(180deg,#080a08,#0d120d,#141a14)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",fontFamily:"'Courier New',monospace",color:"#b8b8a0",padding:16,boxSizing:"border-box"}}>
+        <div style={{textAlign:"center"}}>
+          <div style={{fontSize:80,filter:"drop-shadow(0 0 30px rgba(0,180,0,0.4))"}}>🏆</div>
+          <h1 style={{fontSize:"clamp(28px,5vw,48px)",color:"#44aa44",textShadow:"0 0 25px rgba(0,180,0,0.4)",letterSpacing:4}}>AREA SECURED</h1>
+          <div style={{fontSize:14,marginBottom:8,display:"flex",gap:20,justifyContent:"center",flexWrap:"wrap"}}>
+            <span><span style={{color:"#666"}}>Waves </span><span style={{color:"#ddd"}}>{wave}/{TOTAL_WAVES}</span></span>
+            <span><span style={{color:"#666"}}>Kills </span><span style={{color:"#ddd"}}>{kills}</span></span>
+            <span><span style={{color:"#666"}}>Score </span><span style={{color:"#ffd700"}}>{score}</span></span>
+          </div>
+          <div style={{fontSize:12,color:"#668855",marginBottom:8}}>
+            Lives remaining: {lives} → {lives >= 15 ? "★★★" : lives >= 8 ? "★★" : "★"}
+          </div>
+          <div style={{fontSize:11,color:"#555",marginBottom:30}}>The road ahead awaits.</div>
         </div>
       </div>
     );
@@ -870,12 +499,13 @@ export default function ZombieTD() {
       <div style={{width:"100%",maxWidth:W,display:"flex",justifyContent:"space-between",alignItems:"center",padding:"5px 10px",boxSizing:"border-box",flexWrap:"wrap",gap:4,background:"linear-gradient(180deg,#151512,#111110)",borderBottom:"1px solid #2a2820",borderRadius:"6px 6px 0 0"}}>
         <div style={{display:"flex",gap:14,alignItems:"center",fontSize:12}}>
           <span>🔩 <b style={{color:"#ffd700"}}>{money}</b></span>
-          <span style={{color:lives<=6?"#ff4444":"#cc8888"}}>❤️ <b>{lives}</b><span style={{color:"#444",fontSize:10}}>/20</span></span>
+          <span style={{color:lives<=6?"#ff4444":"#cc8888"}}>❤️ <b>{lives}</b><span style={{color:"#444",fontSize:10}}>/{levelConfig.startingLives}</span></span>
           <span>☠ <b>{kills}</b></span>
           <span style={{color:"#ffd700",fontSize:10}}>★{score}</span>
         </div>
         <div style={{display:"flex",gap:6,alignItems:"center",fontSize:11}}>
           <span style={{color:"#665544"}}>Wave {wave+1}/{TOTAL_WAVES}</span>
+          <span style={{color:"#443322",fontSize:9}}>{levelConfig.name}</span>
           <button onClick={toggleMute} style={{background:"#1a1a16",border:"1px solid #333",color:muted?"#ff4444":"#44aa44",padding:"2px 6px",cursor:"pointer",fontSize:10,fontFamily:"inherit",borderRadius:3}}>
             {muted?"🔇":"🔊"}
           </button>
@@ -908,7 +538,7 @@ export default function ZombieTD() {
       </div>
 
       <div style={{width:"100%",maxWidth:W,display:"flex",gap:3,padding:"5px 3px",boxSizing:"border-box",overflowX:"auto",background:"linear-gradient(180deg,#111110,#151512)",borderTop:"1px solid #2a2820",marginTop:4,borderRadius:"0 0 6px 6px"}}>
-        {Object.entries(TOWERS).map(([k,t])=>{
+        {Object.entries(availableTowers).map(([k,t])=>{
           const canAfford=money>=t.cost;const isSel=sel===k;
           return(
             <button key={k} onClick={()=>{setSel(isSel?null:k);setInfo(null);}} style={{
